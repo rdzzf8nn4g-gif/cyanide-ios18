@@ -3748,9 +3748,43 @@ static void downgrade_trigger_in_springboard(NSString *trackIdStr, NSString *ver
 @property (nonatomic, strong) NSCache<NSString *, UIImage *> *imageCache; // 新增：网络图标缓存（防内存泄漏）
 @end
 
+// 添加一个全局静态缓存，让降级页面和屏蔽页面共享本地App列表
+static NSArray<NSDictionary *> *g_sharedLocalAppsCache = nil;
+
 @implementation AppListViewController
 
 - (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"Select App to Downgrade";
+    self.tableView.rowHeight = 60;
+    // 右上角按钮改为强制刷新缓存
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh target:self action:@selector(forceRefreshApps)];
+    
+    self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
+    self.searchController.searchResultsUpdater = self;
+    self.searchController.obscuresBackgroundDuringPresentation = NO;
+    self.searchController.searchBar.placeholder = @"Search App or Paste App Store Link";
+    self.navigationItem.searchController = self.searchController;
+    self.navigationItem.hidesSearchBarWhenScrolling = NO;
+    self.definesPresentationContext = YES;
+    
+    self.filteredApps = @[];
+    self.appStoreResults = @[];
+    self.imageCache = [[NSCache alloc] init];
+    self.imageCache.countLimit = 100;
+    
+    [self loadApps];
+}
+
+// 新增：强制刷新按钮触发
+- (void)forceRefreshApps {
+    g_sharedLocalAppsCache = nil;
+    [self loadApps];
+}
+
+- (BOOL)isFiltering {
+    return self.searchController.isActive && self.searchController.searchBar.text.length > 0;
+}
     [super viewDidLoad];
     self.title = @"Select App to Downgrade";
     self.tableView.rowHeight = 60;
@@ -3779,7 +3813,6 @@ static void downgrade_trigger_in_springboard(NSString *trackIdStr, NSString *ver
 - (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
     NSString *searchText = searchController.searchBar.text;
     
-    // 1. 取消上一次还没完成的搜索请求（防止频繁发请求导致内存和网络阻塞）
     [self.currentSearchTask cancel];
     self.currentSearchTask = nil;
 
@@ -3790,7 +3823,7 @@ static void downgrade_trigger_in_springboard(NSString *trackIdStr, NSString *ver
         return;
     }
 
-    // 2. 本地应用过滤 (即时响应)
+    // 1. 本地应用过滤
     NSPredicate *predicate = [NSPredicate predicateWithBlock:^BOOL(NSDictionary *appInfo, NSDictionary *bindings) {
         NSString *name = appInfo[@"CFBundleDisplayName"] ?: appInfo[@"CFBundleName"] ?: appInfo[@"CFBundleIdentifier"];
         return [name localizedCaseInsensitiveContainsString:searchText];
@@ -3798,20 +3831,41 @@ static void downgrade_trigger_in_springboard(NSString *trackIdStr, NSString *ver
     self.filteredApps = [self.apps filteredArrayUsingPredicate:predicate];
     [self.tableView reloadData];
 
-    // 3. App Store 在线搜索 (异步)
-    NSString *encodedSearch = [searchText stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
+    // 2. 解析是否是 App Store 链接提取 ID
+    NSString *appId = nil;
+    if ([searchText localizedCaseInsensitiveContainsString:@"apps.apple.com"] && [searchText containsString:@"/id"]) {
+        NSRange idRange = [searchText rangeOfString:@"/id"];
+        if (idRange.location != NSNotFound) {
+            NSString *substring = [searchText substringFromIndex:idRange.location + 3];
+            NSMutableString *digits = [NSMutableString string];
+            for (NSUInteger i = 0; i < substring.length; i++) {
+                unichar c = [substring characterAtIndex:i];
+                if (c >= '0' && c <= '9') {
+                    [digits appendFormat:@"%c", c];
+                } else {
+                    break; // 遇到非数字截断
+                }
+            }
+            if (digits.length > 0) appId = digits;
+        }
+    }
+
+    // 3. 构建 API (链接直搜 vs 关键词搜索)
     NSString *countryCode = [[NSLocale currentLocale] objectForKey:NSLocaleCountryCode] ?: @"us";
-    NSString *urlString = [NSString stringWithFormat:@"https://itunes.apple.com/search?term=%@&entity=software&limit=25&country=%@", encodedSearch, countryCode];
-    NSURL *url = [NSURL URLWithString:urlString];
+    NSString *urlString;
+    if (appId) {
+        urlString = [NSString stringWithFormat:@"https://itunes.apple.com/lookup?id=%@&country=%@", appId, countryCode];
+    } else {
+        NSString *encodedSearch = [searchText stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
+        urlString = [NSString stringWithFormat:@"https://itunes.apple.com/search?term=%@&entity=software&limit=25&country=%@", encodedSearch, countryCode];
+    }
     
-    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]];
     req.timeoutInterval = 6.0;
     
     __weak typeof(self) weakSelf = self;
     self.currentSearchTask = [[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        // 如果任务被取消或者报错，直接返回
         if (error || !data) return; 
-        
         NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
         NSArray *results = json[@"results"];
         if ([results isKindOfClass:[NSArray class]]) {
@@ -3819,7 +3873,6 @@ static void downgrade_trigger_in_springboard(NSString *trackIdStr, NSString *ver
                 __strong typeof(weakSelf) strongSelf = weakSelf;
                 if (!strongSelf) return;
                 strongSelf.appStoreResults = results;
-                // 只刷新在线数据所在的 Section，确保滑动流畅
                 if ([strongSelf isFiltering]) {
                     [strongSelf.tableView reloadData]; 
                 }
@@ -3830,20 +3883,30 @@ static void downgrade_trigger_in_springboard(NSString *trackIdStr, NSString *ver
 }
 
 - (void)loadApps {
+    // 如果有缓存，直接使用缓存，瞬间加载
+    if (g_sharedLocalAppsCache.count > 0) {
+        self.apps = g_sharedLocalAppsCache;
+        [self.tableView reloadData];
+        return;
+    }
+
     UIActivityIndicatorView *spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleLarge];
     [spinner startAnimating];
     self.tableView.backgroundView = spinner;
     self.apps = @[];
     [self.tableView reloadData];
     self.navigationItem.rightBarButtonItem.enabled = NO;
+    
     dispatch_async(dispatch_get_global_queue(0, 0), ^{
         if (!g_springboard_sandbox_escaped) {
             escape_sbx_demo2();
         }
+        
         NSString *appsPath = @"/var/containers/Bundle/Application";
         NSFileManager *fm = [NSFileManager defaultManager];
         NSArray *appDirs = [fm contentsOfDirectoryAtPath:appsPath error:nil];
         NSMutableArray *userApps = [NSMutableArray array];
+        
         for (NSString *uuidDir in appDirs) {
             NSString *appGroupPath = [appsPath stringByAppendingPathComponent:uuidDir];
             NSArray *subContents = [fm contentsOfDirectoryAtPath:appGroupPath error:nil];
@@ -3852,28 +3915,32 @@ static void downgrade_trigger_in_springboard(NSString *trackIdStr, NSString *ver
                     NSString *appBundlePath = [appGroupPath stringByAppendingPathComponent:sub];
                     NSString *infoPlistPath = [appBundlePath stringByAppendingPathComponent:@"Info.plist"];
                     NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:infoPlistPath];
+                    
                     if (info && info[@"CFBundleIdentifier"]) {
                         NSString *bundleId = info[@"CFBundleIdentifier"];
                         if ([bundleId hasPrefix:@"com.apple"]) continue;
                         NSMutableDictionary *mutableInfo = [info mutableCopy];
                         mutableInfo[@"AppBundlePath"] = appBundlePath;
+                        // 解析版本号
+                        mutableInfo[@"AppVersion"] = info[@"CFBundleShortVersionString"] ?: @"1.0";
                         [userApps addObject:mutableInfo];
                     }
                 }
             }
         }
+        
         [userApps sortUsingComparator:^NSComparisonResult(NSDictionary *obj1, NSDictionary *obj2) {
             NSString *name1 = obj1[@"CFBundleDisplayName"] ?: obj1[@"CFBundleName"] ?: obj1[@"CFBundleIdentifier"];
             NSString *name2 = obj2[@"CFBundleDisplayName"] ?: obj2[@"CFBundleName"] ?: obj2[@"CFBundleIdentifier"];
             return [name1 localizedCaseInsensitiveCompare:name2];
         }];
+        
         dispatch_async(dispatch_get_main_queue(), ^{
-            self.apps = @[];
-            [self.tableView reloadData];
-            [self.tableView layoutIfNeeded];
-            self.apps = userApps;
+            g_sharedLocalAppsCache = [userApps copy]; // 写入全局缓存
+            self.apps = g_sharedLocalAppsCache;
             self.tableView.backgroundView = nil;
             self.navigationItem.rightBarButtonItem.enabled = YES;
+            
             [UIView transitionWithView:self.tableView duration:0.25 options:UIViewAnimationOptionTransitionCrossDissolve animations:^{
                 [self.tableView reloadData];
             } completion:nil];
@@ -3907,7 +3974,8 @@ static void downgrade_trigger_in_springboard(NSString *trackIdStr, NSString *ver
         NSDictionary *appInfo = [self isFiltering] ? self.filteredApps[indexPath.row] : self.apps[indexPath.row];
         NSString *name = appInfo[@"CFBundleDisplayName"] ?: appInfo[@"CFBundleName"] ?: appInfo[@"CFBundleIdentifier"];
         cell.textLabel.text = name;
-        cell.detailTextLabel.text = appInfo[@"CFBundleIdentifier"];
+        NSString *ver = appInfo[@"AppVersion"];
+cell.detailTextLabel.text = ver.length > 0 ? [NSString stringWithFormat:@"%@ (v%@)", appInfo[@"CFBundleIdentifier"], ver] : appInfo[@"CFBundleIdentifier"];
         cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
         
         NSString *bundlePath = appInfo[@"AppBundlePath"];
@@ -3958,7 +4026,7 @@ static void downgrade_trigger_in_springboard(NSString *trackIdStr, NSString *ver
         cell.detailTextLabel.text = [NSString stringWithFormat:@"%@ ☁️", storeApp[@"bundleId"]];
         cell.detailTextLabel.textColor = [UIColor systemBlueColor];
         
-        NSString *artworkUrl = storeApp[@"artworkUrl60"];
+        NSString *artworkUrl = storeApp[@"artworkUrl512"] ?: storeApp[@"artworkUrl100"] ?: storeApp[@"artworkUrl60"];
         UIImage *cachedImage = [self.imageCache objectForKey:artworkUrl ?: @""];
         
         if (cachedImage) {
@@ -4309,8 +4377,12 @@ static void downgrade_trigger_in_springboard(NSString *trackIdStr, NSString *ver
     self.title = @"Block App Updates";
     self.tableView.rowHeight = 60;
     self.waitingApps = [NSMutableSet set];
-// 右上角按钮改为 Done
-self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Done" style:UIBarButtonItemStyleDone target:self action:@selector(commitUpdates)];
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Done" style:UIBarButtonItemStyleDone target:self action:@selector(commitUpdates)];
+    
+    // 增加下拉刷新以强制清理缓存
+    UIRefreshControl *refreshControl = [[UIRefreshControl alloc] init];
+    [refreshControl addTarget:self action:@selector(handleRefresh:) forControlEvents:UIControlEventValueChanged];
+    self.tableView.refreshControl = refreshControl;
     
     self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
     self.searchController.searchResultsUpdater = self;
@@ -4320,6 +4392,12 @@ self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
     self.definesPresentationContext = YES;
     self.filteredApps = @[];
+    [self loadApps];
+}
+
+// 下拉刷新事件
+- (void)handleRefresh:(UIRefreshControl *)refreshControl {
+    g_sharedLocalAppsCache = nil; // 核心：清理共享缓存
     [self loadApps];
 }
 
@@ -4342,12 +4420,23 @@ self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:
 }
 
 - (void)loadApps {
+    // 如果有共享缓存，直接使用
+    if (g_sharedLocalAppsCache.count > 0) {
+        self.apps = g_sharedLocalAppsCache;
+        [self.tableView reloadData];
+        if (self.tableView.refreshControl.isRefreshing) {
+            [self.tableView.refreshControl endRefreshing];
+        }
+        return;
+    }
+
     UIActivityIndicatorView *spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleLarge];
     [spinner startAnimating];
-    self.tableView.backgroundView = spinner;
+    if (!self.tableView.refreshControl.isRefreshing) {
+        self.tableView.backgroundView = spinner;
+    }
     self.apps = @[];
     [self.tableView reloadData];
-    self.navigationItem.rightBarButtonItem.enabled = NO;
     
     dispatch_async(dispatch_get_global_queue(0, 0), ^{
         if (!g_springboard_sandbox_escaped) {
@@ -4373,6 +4462,7 @@ self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:
                         if ([bundleId hasPrefix:@"com.apple"]) continue;
                         NSMutableDictionary *mutableInfo = [info mutableCopy];
                         mutableInfo[@"AppBundlePath"] = appBundlePath;
+                        mutableInfo[@"AppVersion"] = info[@"CFBundleShortVersionString"] ?: @"1.0";
                         [userApps addObject:mutableInfo];
                     }
                 }
@@ -4386,14 +4476,12 @@ self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:
         }];
         
         dispatch_async(dispatch_get_main_queue(), ^{
-            self.apps = @[];
-            [self.tableView reloadData];
-            [self.tableView layoutIfNeeded];
-            
-            self.apps = userApps;
+            g_sharedLocalAppsCache = [userApps copy]; // 同步更新共享缓存
+            self.apps = g_sharedLocalAppsCache;
             self.tableView.backgroundView = nil;
-            self.navigationItem.rightBarButtonItem.enabled = YES;
-            
+            if (self.tableView.refreshControl.isRefreshing) {
+                [self.tableView.refreshControl endRefreshing];
+            }
             [UIView transitionWithView:self.tableView duration:0.25 options:UIViewAnimationOptionTransitionCrossDissolve animations:^{
                 [self.tableView reloadData];
             } completion:nil];
