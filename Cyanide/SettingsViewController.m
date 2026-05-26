@@ -7575,183 +7575,147 @@ void cyanide_present_contact(UIViewController *host)
 }
 
 - (void)showAccountSwitcher {
-    // 1. 弹出加载中提示
-    UIAlertController *loadingAlert = [UIAlertController alertControllerWithTitle:@"Initializing" 
-                                                                          message:@"Fetching accounts via SpringBoard...\n" 
-                                                                   preferredStyle:UIAlertControllerStyleAlert];
-    
-    [self presentViewController:loadingAlert animated:YES completion:^{
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            log_session_begin();
-            log_user("[SWITCH] Attempting to read accounts from SpringBoard memory...\n");
-            
-            if (!settings_ensure_kexploit()) {
+    // 采用与降级完全一致的纯内存 ROP 逻辑，不写入任何文件，瞬间读取
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        if (!settings_ensure_kexploit()) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                UIAlertController *err = [UIAlertController alertControllerWithTitle:@"Error" message:@"Kernel primitives not acquired." preferredStyle:UIAlertControllerStyleAlert];
+                [err addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+                [self presentViewController:err animated:YES completion:nil];
+            });
+            return;
+        }
+        
+        NSMutableArray *validAccounts = [NSMutableArray array];
+        
+        @synchronized (settings_rc_lock()) {
+            if (!settings_ensure_springboard_remote_call_locked()) {
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    [loadingAlert dismissViewControllerAnimated:YES completion:^{
-                        UIAlertController *err = [UIAlertController alertControllerWithTitle:@"Error" message:@"Kernel primitives not acquired." preferredStyle:UIAlertControllerStyleAlert];
-                        [err addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
-                        [self presentViewController:err animated:YES completion:nil];
-                    }];
+                    UIAlertController *err = [UIAlertController alertControllerWithTitle:@"Error" message:@"Failed to attach to SpringBoard." preferredStyle:UIAlertControllerStyleAlert];
+                    [err addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+                    [self presentViewController:err animated:YES completion:nil];
                 });
-                log_session_end();
                 return;
             }
             
-            @synchronized (settings_rc_lock()) {
-                if (!settings_ensure_springboard_remote_call_locked()) {
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        [loadingAlert dismissViewControllerAnimated:YES completion:^{
-                            UIAlertController *err = [UIAlertController alertControllerWithTitle:@"Error" message:@"Failed to attach to SpringBoard." preferredStyle:UIAlertControllerStyleAlert];
-                            [err addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
-                            [self presentViewController:err animated:YES completion:nil];
-                        }];
-                    });
-                    log_session_end();
-                    return;
-                }
-                
-                // 让 SpringBoard 提权越过沙盒，以便后续将账号列表写出为 plist 文件
-                escape_sbx_demo2_in_session();
-                
-                // ==========================================================
-                // 👇 开始向 SpringBoard 注入 ROP 链，获取账号并写出到本地缓存 👇
-                // ==========================================================
-                
-                uint64_t nsstringClass = remote_objc_getClass("NSString");
-                uint64_t stringWithUTF8StringSel = remote_sel_registerName("stringWithUTF8String:");
-                
-                // 准备一个空字符串占位符，防止nil插入数组导致崩溃
-                uint64_t emptyStrPtr = downgrade_remote_alloc_str("");
-                uint64_t emptyStrNS = do_remote_call_stable(1000, "objc_msgSend", nsstringClass, stringWithUTF8StringSel, emptyStrPtr, 0, 0, 0, 0, 0);
-                
-                // 1. 动态加载 StoreServices 框架
-                uint64_t ssPath = downgrade_remote_alloc_str("/System/Library/PrivateFrameworks/StoreServices.framework/StoreServices");
-                do_remote_call_stable(1000, "dlopen", ssPath, 9, 0, 0, 0, 0, 0, 0);
-                do_remote_call_stable(1000, "free", ssPath, 0, 0, 0, 0, 0, 0, 0);
-                
-                // 2. 调用 [SSAccountStore defaultStore]
-                uint64_t storeClass = remote_objc_getClass("SSAccountStore");
-                uint64_t defaultStoreSel = remote_sel_registerName("defaultStore");
-                uint64_t storeObj = do_remote_call_stable(1000, "objc_msgSend", storeClass, defaultStoreSel, 0, 0, 0, 0, 0, 0);
-                
-                // 3. 调用 [store accounts] 获取账号数组并拿 count
-                uint64_t accountsSel = remote_sel_registerName("accounts");
-                uint64_t accountsArray = do_remote_call_stable(1000, "objc_msgSend", storeObj, accountsSel, 0, 0, 0, 0, 0, 0);
-                uint64_t countSel = remote_sel_registerName("count");
-                uint64_t count = do_remote_call_stable(1000, "objc_msgSend", accountsArray, countSel, 0, 0, 0, 0, 0, 0);
-                
-                // 4. 初始化一个新的 NSMutableArray 来平铺存放数据
-                uint64_t mutArrayClass = remote_objc_getClass("NSMutableArray");
-                uint64_t arraySel = remote_sel_registerName("array");
-                uint64_t flatArray = do_remote_call_stable(1000, "objc_msgSend", mutArrayClass, arraySel, 0, 0, 0, 0, 0, 0);
-                
-                uint64_t objectAtIndexSel = remote_sel_registerName("objectAtIndex:");
-                uint64_t isLocalAccountSel = remote_sel_registerName("isLocalAccount");
-                uint64_t accountNameSel = remote_sel_registerName("accountName");
-                uint64_t firstNameSel = remote_sel_registerName("firstName");
-                uint64_t lastNameSel = remote_sel_registerName("lastName");
-                uint64_t storefrontSel = remote_sel_registerName("storeFrontIdentifier");
-                uint64_t addObjectSel = remote_sel_registerName("addObject:");
-                
-                // 5. 循环遍历提取信息，压入 flatArray (4个元素为一组)
-                for (uint64_t i = 0; i < count; i++) {
-                    uint64_t accountObj = do_remote_call_stable(1000, "objc_msgSend", accountsArray, objectAtIndexSel, i, 0, 0, 0, 0, 0);
-                    uint64_t isLocal = do_remote_call_stable(1000, "objc_msgSend", accountObj, isLocalAccountSel, 0, 0, 0, 0, 0, 0);
-                    
-                    if (!isLocal) {
-                        uint64_t aName = do_remote_call_stable(1000, "objc_msgSend", accountObj, accountNameSel, 0, 0, 0, 0, 0, 0);
-                        uint64_t fName = do_remote_call_stable(1000, "objc_msgSend", accountObj, firstNameSel, 0, 0, 0, 0, 0, 0);
-                        uint64_t lName = do_remote_call_stable(1000, "objc_msgSend", accountObj, lastNameSel, 0, 0, 0, 0, 0, 0);
-                        uint64_t sFront = do_remote_call_stable(1000, "objc_msgSend", accountObj, storefrontSel, 0, 0, 0, 0, 0, 0);
-                        
-                        // 保证不会塞入nil对象，否则远程应用会崩
-                        do_remote_call_stable(1000, "objc_msgSend", flatArray, addObjectSel, aName ? aName : emptyStrNS, 0, 0, 0, 0, 0);
-                        do_remote_call_stable(1000, "objc_msgSend", flatArray, addObjectSel, fName ? fName : emptyStrNS, 0, 0, 0, 0, 0);
-                        do_remote_call_stable(1000, "objc_msgSend", flatArray, addObjectSel, lName ? lName : emptyStrNS, 0, 0, 0, 0, 0);
-                        do_remote_call_stable(1000, "objc_msgSend", flatArray, addObjectSel, sFront ? sFront : emptyStrNS, 0, 0, 0, 0, 0);
-                    }
-                }
-                
-                // 6. 让 SpringBoard 将这个扁平化的数组写入到一个 plist 缓存文件
-                NSString *cachePath = @"/var/mobile/Library/Preferences/cyanide_accounts_cache.plist";
-                uint64_t filePathPtr = downgrade_remote_alloc_str(cachePath.UTF8String);
-                uint64_t filePathNS = do_remote_call_stable(1000, "objc_msgSend", nsstringClass, stringWithUTF8StringSel, filePathPtr, 0, 0, 0, 0, 0);
-                uint64_t writeToFileSel = remote_sel_registerName("writeToFile:atomically:");
-                
-                // [flatArray writeToFile:cachePath atomically:YES]
-                do_remote_call_stable(1000, "objc_msgSend", flatArray, writeToFileSel, filePathNS, 1, 0, 0, 0, 0);
-                
-                // 释放刚才 malloc 的内从
-                do_remote_call_stable(1000, "free", filePathPtr, 0, 0, 0, 0, 0, 0, 0);
-                do_remote_call_stable(1000, "free", emptyStrPtr, 0, 0, 0, 0, 0, 0, 0);
-                
-                // ==========================================================
-                // 👆 SpringBoard 注入执行完毕 👆
-                // ==========================================================
-            }
-            log_session_end();
+            // 1. 加载 StoreServices 框架
+            uint64_t ssPath = downgrade_remote_alloc_str("/System/Library/PrivateFrameworks/StoreServices.framework/StoreServices");
+            do_remote_call_stable(1000, "dlopen", ssPath, 9, 0, 0, 0, 0, 0, 0);
+            do_remote_call_stable(1000, "free", ssPath, 0, 0, 0, 0, 0, 0, 0);
             
-            // 当前 App 进程自我提权越过沙盒，以便读取 /var/mobile 目录下的文件
-            escape_sbx_demo2();
+            // 2. 获取 SSAccountStore
+            uint64_t storeClass = remote_objc_getClass("SSAccountStore");
+            uint64_t defaultStoreSel = remote_sel_registerName("defaultStore");
+            uint64_t storeObj = do_remote_call_stable(1000, "objc_msgSend", storeClass, defaultStoreSel, 0, 0, 0, 0, 0, 0);
             
-            // 读取刚刚 SpringBoard 帮我们查出并写入的缓存文件
-            NSString *cachePath = @"/var/mobile/Library/Preferences/cyanide_accounts_cache.plist";
-            NSArray *flatAccounts = [NSArray arrayWithContentsOfFile:cachePath];
+            // 3. 获取 accounts 数组
+            uint64_t accountsSel = remote_sel_registerName("accounts");
+            uint64_t accountsArray = do_remote_call_stable(1000, "objc_msgSend", storeObj, accountsSel, 0, 0, 0, 0, 0, 0);
+            uint64_t countSel = remote_sel_registerName("count");
+            uint64_t count = do_remote_call_stable(1000, "objc_msgSend", accountsArray, countSel, 0, 0, 0, 0, 0, 0);
             
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [loadingAlert dismissViewControllerAnimated:YES completion:^{
-                    if (!flatAccounts || flatAccounts.count == 0) {
-                        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"No Accounts" message:@"No App Store accounts found on this device." preferredStyle:UIAlertControllerStyleAlert];
-                        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-                        [self presentViewController:alert animated:YES completion:nil];
-                        return;
-                    }
-                    
-                    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Switch App Store Account" message:@"Select an account. It will be switched instantly without password." preferredStyle:UIAlertControllerStyleActionSheet];
-                    
-                    // 因为刚才在 SpringBoard 中是 4个一组 放进数组的，所以这里每次跳 4 个来读取
-                    for (NSUInteger i = 0; i < flatAccounts.count; i += 4) {
-                        NSString *accountName = flatAccounts[i];
-                        NSString *firstName = flatAccounts[i+1];
-                        NSString *lastName = flatAccounts[i+2];
-                        NSString *storefront = flatAccounts[i+3];
-                        
-                        NSString *countryCode = cyanide_countryCodeForStoreFront(storefront);
-                        
-                        NSString *namePart = @"";
-                        if (firstName.length > 0) {
-                            namePart = [NSString stringWithFormat:@"%@ %@", firstName, lastName.length > 0 ? lastName : @""];
-                        }
-                        
-                        NSString *title = (namePart.length > 0 && ![namePart isEqualToString:accountName])
-                            ? [NSString stringWithFormat:@"%@ (%@) %@", namePart, countryCode, accountName]
-                            : [NSString stringWithFormat:@"%@ (%@)", accountName, countryCode];
-                        
-                        UIAlertAction *action = [UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-                            // 调用日志界面并注入真实的切换代码
-                            InstallProgressViewController *logVC = [[InstallProgressViewController alloc] init];
-                            UINavigationController *logNav = [[UINavigationController alloc] initWithRootViewController:logVC];
-                            logNav.modalPresentationStyle = UIModalPresentationAutomatic;
-                            [self presentViewController:logNav animated:YES completion:^{
-                                switch_account_in_springboard(accountName); // 原有功能继续执行
-                            }];
-                        }];
-                        [sheet addAction:action];
-                    }
-                    
-                    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-                    
-                    if ([[UIDevice currentDevice] userInterfaceIdiom] == UIUserInterfaceIdiomPad && sheet.popoverPresentationController) {
-                        sheet.popoverPresentationController.sourceView = self.view;
-                        sheet.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2.0, self.view.bounds.size.height / 2.0, 1.0, 1.0);
-                        sheet.popoverPresentationController.permittedArrowDirections = 0;
-                    }
-                    
-                    [self presentViewController:sheet animated:YES completion:nil];
+            // 4. 准备 SEL
+            uint64_t objectAtIndexSel = remote_sel_registerName("objectAtIndex:");
+            uint64_t accountNameSel = remote_sel_registerName("accountName");
+            uint64_t firstNameSel = remote_sel_registerName("firstName");
+            uint64_t lastNameSel = remote_sel_registerName("lastName");
+            uint64_t storefrontSel = remote_sel_registerName("storeFrontIdentifier");
+            uint64_t utf8Sel = remote_sel_registerName("UTF8String");
+            
+            // 5. 遍历并用 remote_read 直接从 SpringBoard 内存吸取字符串
+            for (uint64_t i = 0; i < count; i++) {
+                uint64_t accountObj = do_remote_call_stable(1000, "objc_msgSend", accountsArray, objectAtIndexSel, i, 0, 0, 0, 0, 0);
+                
+                // --- 读取 AccountName ---
+                uint64_t aNameNS = do_remote_call_stable(1000, "objc_msgSend", accountObj, accountNameSel, 0, 0, 0, 0, 0, 0);
+                uint64_t aNameC = aNameNS ? do_remote_call_stable(1000, "objc_msgSend", aNameNS, utf8Sel, 0, 0, 0, 0, 0, 0) : 0;
+                char aNameBuf[256] = {0};
+                if (aNameC) remote_read(aNameC, aNameBuf, 255);
+                NSString *accountName = [NSString stringWithUTF8String:aNameBuf];
+                
+                // 账号为空则跳过
+                if (!accountName || accountName.length == 0) continue;
+                
+                // --- 读取 FirstName ---
+                uint64_t fNameNS = do_remote_call_stable(1000, "objc_msgSend", accountObj, firstNameSel, 0, 0, 0, 0, 0, 0);
+                uint64_t fNameC = fNameNS ? do_remote_call_stable(1000, "objc_msgSend", fNameNS, utf8Sel, 0, 0, 0, 0, 0, 0) : 0;
+                char fNameBuf[256] = {0};
+                if (fNameC) remote_read(fNameC, fNameBuf, 255);
+                NSString *firstName = [NSString stringWithUTF8String:fNameBuf];
+                
+                // --- 读取 LastName ---
+                uint64_t lNameNS = do_remote_call_stable(1000, "objc_msgSend", accountObj, lastNameSel, 0, 0, 0, 0, 0, 0);
+                uint64_t lNameC = lNameNS ? do_remote_call_stable(1000, "objc_msgSend", lNameNS, utf8Sel, 0, 0, 0, 0, 0, 0) : 0;
+                char lNameBuf[256] = {0};
+                if (lNameC) remote_read(lNameC, lNameBuf, 255);
+                NSString *lastName = [NSString stringWithUTF8String:lNameBuf];
+                
+                // --- 读取 StoreFront ---
+                uint64_t sFrontNS = do_remote_call_stable(1000, "objc_msgSend", accountObj, storefrontSel, 0, 0, 0, 0, 0, 0);
+                uint64_t sFrontC = sFrontNS ? do_remote_call_stable(1000, "objc_msgSend", sFrontNS, utf8Sel, 0, 0, 0, 0, 0, 0) : 0;
+                char sFrontBuf[256] = {0};
+                if (sFrontC) remote_read(sFrontC, sFrontBuf, 255);
+                NSString *storeFront = [NSString stringWithUTF8String:sFrontBuf];
+                
+                [validAccounts addObject:@{
+                    @"accountName": accountName ?: @"",
+                    @"firstName": firstName ?: @"",
+                    @"lastName": lastName ?: @"",
+                    @"storeFront": storeFront ?: @""
                 }];
-            });
+            }
+        }
+        
+        // 6. 获取完毕，切回主线程展示 UI（0延迟，无需加载动画）
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (validAccounts.count == 0) {
+                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"No Accounts" message:@"No App Store accounts found on this device." preferredStyle:UIAlertControllerStyleAlert];
+                [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                [self presentViewController:alert animated:YES completion:nil];
+                return;
+            }
+            
+            UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Switch App Store Account" message:@"Select an account. It will be switched instantly without password." preferredStyle:UIAlertControllerStyleActionSheet];
+            
+            for (NSDictionary *acc in validAccounts) {
+                NSString *accountName = acc[@"accountName"];
+                NSString *firstName = acc[@"firstName"];
+                NSString *lastName = acc[@"lastName"];
+                NSString *storefront = acc[@"storeFront"];
+                
+                NSString *countryCode = cyanide_countryCodeForStoreFront(storefront);
+                
+                NSString *namePart = @"";
+                if (firstName.length > 0) {
+                    namePart = [NSString stringWithFormat:@"%@ %@", firstName, lastName.length > 0 ? lastName : @""];
+                }
+                
+                NSString *title = (namePart.length > 0 && ![namePart isEqualToString:accountName])
+                    ? [NSString stringWithFormat:@"%@ (%@) %@", namePart, countryCode, accountName]
+                    : [NSString stringWithFormat:@"%@ (%@)", accountName, countryCode];
+                
+                UIAlertAction *action = [UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+                    InstallProgressViewController *logVC = [[InstallProgressViewController alloc] init];
+                    UINavigationController *logNav = [[UINavigationController alloc] initWithRootViewController:logVC];
+                    logNav.modalPresentationStyle = UIModalPresentationAutomatic;
+                    [self presentViewController:logNav animated:YES completion:^{
+                        switch_account_in_springboard(accountName);
+                    }];
+                }];
+                [sheet addAction:action];
+            }
+            
+            [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+            
+            if ([[UIDevice currentDevice] userInterfaceIdiom] == UIUserInterfaceIdiomPad && sheet.popoverPresentationController) {
+                sheet.popoverPresentationController.sourceView = self.view;
+                sheet.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2.0, self.view.bounds.size.height / 2.0, 1.0, 1.0);
+                sheet.popoverPresentationController.permittedArrowDirections = 0;
+            }
+            
+            [self presentViewController:sheet animated:YES completion:nil];
         });
-    }];
+    });
 }
 
 @end
