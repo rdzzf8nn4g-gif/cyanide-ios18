@@ -39,6 +39,83 @@
 #import <sys/stat.h>
 #import <dlfcn.h>
 
+// 👇================ 账号切换所需声明与辅助函数 ================👇
+@interface SSAccount_Cyanide : NSObject
+- (NSString *)accountName;
+- (NSString *)firstName;
+- (NSString *)lastName;
+- (NSString *)storeFrontIdentifier;
+- (BOOL)isLocalAccount;
+@end
+
+@interface SSAccountStore_Cyanide : NSObject
++ (id)defaultStore;
+- (NSArray *)accounts;
+@end
+
+static NSString *cyanide_countryCodeForStoreFront(NSString *identifier) {
+    if (!identifier || [identifier length] == 0) {
+        return @"N/A";
+    }
+    static NSDictionary<NSString *, NSString *> *storefrontMap = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        storefrontMap = @{
+                // A
+                @"143481": @"AE", @"143540": @"AG", @"143538": @"AI", @"143575": @"AL", @"143524": @"AM", @"143564": @"AO", @"143505": @"AR", @"143445": @"AT", @"143460": @"AU", @"143568": @"AZ",
+                // B
+                @"143541": @"BB", @"143490": @"BD", @"143446": @"BE", @"143526": @"BG", @"143559": @"BH", @"143542": @"BM", @"143560": @"BN", @"143556": @"BO", @"143503": @"BR", @"143539": @"BS", @"143525": @"BW", @"143565": @"BY", @"143555": @"BZ",
+                // C
+                @"143455": @"CA", @"143459": @"CH", @"143527": @"CI", @"143483": @"CL", @"143465": @"CN", @"143501": @"CO", @"143495": @"CR", @"143557": @"CY", @"143489": @"CZ",
+                // D
+                @"143443": @"DE", @"143458": @"DK", @"143545": @"DM", @"143508": @"DO", @"143563": @"DZ",
+                // E
+                @"143509": @"EC", @"143518": @"EE", @"143516": @"EG", @"143454": @"ES",
+                // F
+                @"143447": @"FI", @"143442": @"FR",
+                // G
+                @"143444": @"GB", @"143546": @"GD", @"143615": @"GE", @"143573": @"GH", @"143448": @"GR", @"143504": @"GT", @"143553": @"GY",
+                // H
+                @"143463": @"HK", @"143510": @"HN", @"143494": @"HR", @"143482": @"HU",
+                // I
+                @"143476": @"ID", @"143449": @"IE", @"143491": @"IL", @"143467": @"IN", @"143558": @"IS", @"143450": @"IT",
+                // J
+                @"143511": @"JM", @"143528": @"JO", @"143462": @"JP",
+                // K
+                @"143529": @"KE", @"143548": @"KN", @"143466": @"KR", @"143493": @"KW", @"143544": @"KY", @"143517": @"KZ",
+                // L
+                @"143497": @"LB", @"143549": @"LC", @"143522": @"LI", @"143486": @"LK", @"143520": @"LT", @"143451": @"LU", @"143519": @"LV",
+                // M
+                @"143523": @"MD", @"143531": @"MG", @"143530": @"MK", @"143532": @"ML", @"143592": @"MN", @"143515": @"MO", @"143547": @"MS", @"143521": @"MT", @"143533": @"MU", @"143488": @"MV", @"143468": @"MX", @"143473": @"MY",
+                // N
+                @"143534": @"NE", @"143561": @"NG", @"143512": @"NI", @"143452": @"NL", @"143457": @"NO", @"143484": @"NP", @"143461": @"NZ",
+                // O
+                @"143562": @"OM",
+                // P
+                @"143485": @"PA", @"143507": @"PE", @"143474": @"PH", @"143477": @"PK", @"143478": @"PL", @"143453": @"PT", @"143513": @"PY",
+                // Q
+                @"143498": @"QA",
+                // R
+                @"143487": @"RO", @"143500": @"RS", @"143469": @"RU",
+                // S
+                @"143479": @"SA", @"143456": @"SE", @"143464": @"SG", @"143499": @"SI", @"143496": @"SK", @"143535": @"SN", @"143554": @"SR", @"143506": @"SV",
+                // T
+                @"143552": @"TC", @"143475": @"TH", @"143536": @"TN", @"143480": @"TR", @"143551": @"TT", @"143470": @"TW", @"143572": @"TZ",
+                // U
+                @"143492": @"UA", @"143537": @"UG", @"143441": @"US", @"143514": @"UY", @"143566": @"UZ",
+                // V
+                @"143550": @"VC", @"143502": @"VE", @"143543": @"VG", @"143471": @"VN",
+                // Y
+                @"143571": @"YE",
+                // Z
+                @"143472": @"ZA"
+        };
+    });
+    NSString *mainId = [[[identifier componentsSeparatedByString:@"-"] firstObject] componentsSeparatedByString:@","][0];
+    return storefrontMap[mainId] ?: identifier;
+}
+// 👆================ 账号切换所需声明结束 ================👆
+
 @interface DSRespringOverlayView : UIView
 @property (nonatomic, strong) WKWebView *webView;
 @property (nonatomic, assign) BOOL didLoadPayload;
@@ -3540,6 +3617,7 @@ typedef NS_ENUM(NSInteger, SettingsSection) {
     SectionThemer,
     SectionAppDowngrade, // 👈 新增
     SectionBlockUpdates, // 👈 新增
+    SectionAccountSwitcher, // 👈 追加账号切换
     SectionCount,
 };
 
@@ -3738,6 +3816,109 @@ static void downgrade_trigger_in_springboard(NSString *trackIdStr, NSString *ver
         });
     });
 }
+
+// 👇================ 核心：在 SpringBoard 中执行免密切换 ================👇
+static void switch_account_in_springboard(NSString *targetAccountName) {
+    dispatch_async(dispatch_get_global_queue(0, 0), ^{
+        log_session_begin();
+        log_user("[SWITCH] Requesting account switch to: %s\n", targetAccountName.UTF8String);
+        if (!settings_ensure_kexploit()) {
+            log_user("[SWITCH] Failed: kernel primitives not acquired.\n");
+            log_session_end();
+            return;
+        }
+        @synchronized (settings_rc_lock()) {
+            if (!settings_ensure_springboard_remote_call_locked()) {
+                log_user("[SWITCH] Failed to attach to SpringBoard.\n");
+                log_session_end();
+                return;
+            }
+            escape_sbx_demo2_in_session();
+
+            log_user("[SWITCH] Injecting StoreServices and StoreKitUI frameworks into SpringBoard...\n");
+            uint64_t ssPath = downgrade_remote_alloc_str("/System/Library/PrivateFrameworks/StoreServices.framework/StoreServices");
+            uint64_t ssHandle = do_remote_call_stable(1000, "dlopen", ssPath, 9, 0, 0, 0, 0, 0, 0);
+            do_remote_call_stable(1000, "free", ssPath, 0, 0, 0, 0, 0, 0, 0);
+            
+            uint64_t skuiPath = downgrade_remote_alloc_str("/System/Library/PrivateFrameworks/StoreKitUI.framework/StoreKitUI");
+            uint64_t skuiHandle = do_remote_call_stable(1000, "dlopen", skuiPath, 9, 0, 0, 0, 0, 0, 0);
+            do_remote_call_stable(1000, "free", skuiPath, 0, 0, 0, 0, 0, 0, 0);
+
+            if (!ssHandle) {
+                log_user("[SWITCH] ERROR: Failed to dlopen StoreServices in SpringBoard.\n");
+                log_session_end();
+                return;
+            }
+
+            log_user("[SWITCH] Fetching accounts...\n");
+            uint64_t storeClass = remote_objc_getClass("SSAccountStore");
+            uint64_t defaultStoreSel = remote_sel_registerName("defaultStore");
+            uint64_t storeObj = do_remote_call_stable(1000, "objc_msgSend", storeClass, defaultStoreSel, 0, 0, 0, 0, 0, 0);
+
+            uint64_t accountsSel = remote_sel_registerName("accounts");
+            uint64_t accountsArray = do_remote_call_stable(1000, "objc_msgSend", storeObj, accountsSel, 0, 0, 0, 0, 0, 0);
+
+            uint64_t countSel = remote_sel_registerName("count");
+            uint64_t count = do_remote_call_stable(1000, "objc_msgSend", accountsArray, countSel, 0, 0, 0, 0, 0, 0);
+
+            uint64_t objectAtIndexSel = remote_sel_registerName("objectAtIndex:");
+            uint64_t accountNameSel = remote_sel_registerName("accountName");
+            uint64_t isEqualToStringSel = remote_sel_registerName("isEqualToString:");
+            uint64_t setActiveSel = remote_sel_registerName("setActive:");
+            uint64_t saveAccountSel = remote_sel_registerName("saveAccount:verifyCredentials:error:");
+
+            uint64_t targetNamePtr = downgrade_remote_alloc_str(targetAccountName.UTF8String);
+            uint64_t nsstringClass = remote_objc_getClass("NSString");
+            uint64_t stringWithUTF8StringSel = remote_sel_registerName("stringWithUTF8String:");
+            uint64_t targetNameNS = do_remote_call_stable(1000, "objc_msgSend", nsstringClass, stringWithUTF8StringSel, targetNamePtr, 0, 0, 0, 0, 0);
+
+            BOOL found = NO;
+            for (uint64_t i = 0; i < count; i++) {
+                uint64_t accountObj = do_remote_call_stable(1000, "objc_msgSend", accountsArray, objectAtIndexSel, i, 0, 0, 0, 0, 0);
+                uint64_t nameNS = do_remote_call_stable(1000, "objc_msgSend", accountObj, accountNameSel, 0, 0, 0, 0, 0, 0);
+                
+                uint64_t isEqual = do_remote_call_stable(1000, "objc_msgSend", nameNS, isEqualToStringSel, targetNameNS, 0, 0, 0, 0, 0);
+                if (isEqual) {
+                    found = YES;
+                    log_user("[SWITCH] Account found! Setting active (skipping password)...\n");
+                    do_remote_call_stable(1000, "objc_msgSend", accountObj, setActiveSel, 1, 0, 0, 0, 0, 0); // setActive:YES
+                    do_remote_call_stable(1000, "objc_msgSend", storeObj, saveAccountSel, accountObj, 0, 0, 0, 0, 0); // verifyCredentials:NO
+                    break;
+                }
+            }
+            do_remote_call_stable(1000, "free", targetNamePtr, 0, 0, 0, 0, 0, 0, 0);
+
+            if (found) {
+                log_user("[SWITCH] Refreshing App Store region/storefront...\n");
+                uint64_t deviceClass = remote_objc_getClass("SSDevice");
+                uint64_t currentDeviceSel = remote_sel_registerName("currentDevice");
+                uint64_t reloadStoreFrontSel = remote_sel_registerName("reloadStoreFrontIdentifier");
+                uint64_t deviceObj = do_remote_call_stable(1000, "objc_msgSend", deviceClass, currentDeviceSel, 0, 0, 0, 0, 0, 0);
+                do_remote_call_stable(1000, "objc_msgSend", deviceObj, reloadStoreFrontSel, 0, 0, 0, 0, 0, 0);
+
+                if (skuiHandle) {
+                    uint64_t contextClass = remote_objc_getClass("SKUIClientContext");
+                    uint64_t defaultContextSel = remote_sel_registerName("defaultContext");
+                    uint64_t appControllerSel = remote_sel_registerName("applicationController");
+                    uint64_t resetUISel = remote_sel_registerName("_resetUserInterfaceAfterStoreFrontChange");
+                    
+                    uint64_t contextObj = do_remote_call_stable(1000, "objc_msgSend", contextClass, defaultContextSel, 0, 0, 0, 0, 0, 0);
+                    uint64_t appControllerObj = do_remote_call_stable(1000, "objc_msgSend", contextObj, appControllerSel, 0, 0, 0, 0, 0, 0);
+                    do_remote_call_stable(1000, "objc_msgSend", appControllerObj, resetUISel, 0, 0, 0, 0, 0, 0);
+                }
+                log_user("[OK] Account switched successfully via SpringBoard payload!\n");
+            } else {
+                log_user("[SWITCH] ERROR: Account %s not found in device cache.\n", targetAccountName.UTF8String);
+            }
+        }
+        log_session_end();
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[NSNotificationCenter defaultCenter] postNotificationName:kSettingsActionsDidCompleteNotification object:nil];
+            [[UIApplication sharedApplication] openURL:[NSURL URLWithString:@"itms-apps://"] options:@{} completionHandler:nil]; // 自动跳转 App Store
+        });
+    });
+}
+// 👆================ 核心逻辑结束 ================👆
 
 @interface AppListViewController : UITableViewController <UISearchResultsUpdating>
 @property (nonatomic, strong) NSArray<NSDictionary *> *apps;
@@ -5428,8 +5609,10 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
         @{ @"title": @"SpringBoard Tweaks", @"icon": @"apps.iphone",                         @"color": [UIColor systemIndigoColor], @"section": @(SectionDarkSwordTweaks) },
         @{ @"title": @"Home Layout Extras", @"icon": @"square.dashed.inset.filled",          @"color": [UIColor systemPurpleColor], @"section": @(SectionLayoutExtras) },
         // 👇 追加这两个字典 👇
+        // 👇 追加这三个字典 👇
         @{ @"title": @"App Downgrade",      @"icon": @"arrow.down.app.fill",                @"color": [UIColor systemPurpleColor], @"section": @(SectionAppDowngrade) },
         @{ @"title": @"Block Updates",      @"icon": @"lock.shield.fill",                   @"color": [UIColor systemRedColor],    @"section": @(SectionBlockUpdates) },
+        @{ @"title": @"Account Switcher",   @"icon": @"person.2.circle.fill",               @"color": [UIColor systemBlueColor],   @"section": @(SectionAccountSwitcher) },
     ];
 }
 
@@ -5449,8 +5632,7 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
     for (NSDictionary *bundle in bundles) {
         if ([bundle[@"experimental"] boolValue] && !experimentalOn) continue;
         NSInteger sec = [bundle[@"section"] integerValue];
-        // 👇 在 if 判断里加入这两项 👇
-        if ([self rowsForSection:sec].count > 0 || sec == SectionAppDowngrade || sec == SectionBlockUpdates) {
+        if ([self rowsForSection:sec].count > 0 || sec == SectionAppDowngrade || sec == SectionBlockUpdates || sec == SectionAccountSwitcher) {
             [out addObject:bundle];
         }
     }
@@ -6962,7 +7144,7 @@ void cyanide_present_contact(UIViewController *host)
                 NSString *pushTitle = bundle[@"title"];
                 
                 // 👇========= 追加跳转拦截逻辑 =========👇
-                if (underlying == SectionAppDowngrade || underlying == SectionBlockUpdates) {
+                if (underlying == SectionAppDowngrade || underlying == SectionBlockUpdates || underlying == SectionAccountSwitcher) {
                     if (!g_kexploit_done) {
                         UIAlertController *loadingAlert = [UIAlertController alertControllerWithTitle:@"Initializing" 
                                                                                               message:@"Acquiring kernel primitives...\n" 
@@ -6980,8 +7162,12 @@ void cyanide_present_contact(UIViewController *host)
                                     
                                     [loadingAlert dismissViewControllerAnimated:YES completion:^{
                                         if (ok) {
-                                            UIViewController *targetVC = (underlying == SectionAppDowngrade) ? [[AppListViewController alloc] init] : [[BlockUpdatesViewController alloc] init];
-                                            [strongSelf.navigationController pushViewController:targetVC animated:YES];
+                                            if (underlying == SectionAccountSwitcher) {
+                                                [strongSelf showAccountSwitcher];
+                                            } else {
+                                                UIViewController *targetVC = (underlying == SectionAppDowngrade) ? [[AppListViewController alloc] init] : [[BlockUpdatesViewController alloc] init];
+                                                [strongSelf.navigationController pushViewController:targetVC animated:YES];
+                                            }
                                         } else {
                                             UIAlertController *errAlert = [UIAlertController alertControllerWithTitle:@"Failed" 
                                                                                                               message:@"Could not acquire kernel primitives. Please try again or reboot." 
@@ -6994,8 +7180,12 @@ void cyanide_present_contact(UIViewController *host)
                             });
                         }];
                     } else {
-                        UIViewController *targetVC = (underlying == SectionAppDowngrade) ? [[AppListViewController alloc] init] : [[BlockUpdatesViewController alloc] init];
-                        [self.navigationController pushViewController:targetVC animated:YES];
+                        if (underlying == SectionAccountSwitcher) {
+                            [self showAccountSwitcher];
+                        } else {
+                            UIViewController *targetVC = (underlying == SectionAppDowngrade) ? [[AppListViewController alloc] init] : [[BlockUpdatesViewController alloc] init];
+                            [self.navigationController pushViewController:targetVC animated:YES];
+                        }
                     }
                     return;
                 }
@@ -7381,6 +7571,78 @@ void cyanide_present_contact(UIViewController *host)
                           withRowAnimation:UITableViewRowAnimationNone];
         }
     }
+}
+
+- (void)showAccountSwitcher {
+    // 动态加载私有框架，签名版App必须用此方式才能读取
+    void *handle = dlopen("/System/Library/PrivateFrameworks/StoreServices.framework/StoreServices", RTLD_NOW);
+    if (!handle) {
+        UIAlertController *err = [UIAlertController alertControllerWithTitle:@"Error" message:@"StoreServices framework could not be loaded." preferredStyle:UIAlertControllerStyleAlert];
+        [err addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+        [self presentViewController:err animated:YES completion:nil];
+        return;
+    }
+    
+    Class SSAccountStoreCls = NSClassFromString(@"SSAccountStore");
+    id store = [SSAccountStoreCls performSelector:@selector(defaultStore)];
+    NSArray *allAccounts = [store performSelector:@selector(accounts)];
+    
+    NSMutableArray *validAccounts = [NSMutableArray array];
+    for (id account in allAccounts) {
+        if (!((BOOL(*)(id, SEL))objc_msgSend)(account, sel_registerName("isLocalAccount"))) {
+            [validAccounts addObject:account];
+        }
+    }
+    
+    if (validAccounts.count == 0) {
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"No Accounts" message:@"No App Store accounts found on this device." preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+        dlclose(handle);
+        return;
+    }
+    
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Switch App Store Account" message:@"Select an account. It will be switched instantly without password." preferredStyle:UIAlertControllerStyleActionSheet];
+    
+    for (id account in validAccounts) {
+        NSString *accountName = ((NSString*(*)(id, SEL))objc_msgSend)(account, sel_registerName("accountName"));
+        NSString *firstName = ((NSString*(*)(id, SEL))objc_msgSend)(account, sel_registerName("firstName"));
+        NSString *lastName = ((NSString*(*)(id, SEL))objc_msgSend)(account, sel_registerName("lastName"));
+        NSString *storefront = ((NSString*(*)(id, SEL))objc_msgSend)(account, sel_registerName("storeFrontIdentifier"));
+        NSString *countryCode = cyanide_countryCodeForStoreFront(storefront);
+        
+        NSString *namePart = @"";
+        if (firstName.length > 0) {
+            namePart = [NSString stringWithFormat:@"%@ %@", firstName, lastName ?: @""];
+        }
+        
+        NSString *title = (namePart.length > 0 && ![namePart isEqualToString:accountName])
+            ? [NSString stringWithFormat:@"%@ (%@) %@", namePart, countryCode, accountName]
+            : [NSString stringWithFormat:@"%@ (%@)", accountName, countryCode];
+        
+        UIAlertAction *action = [UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+            // 调出日志面板，并执行 SpringBoard RemoteCall
+            InstallProgressViewController *logVC = [[InstallProgressViewController alloc] init];
+            UINavigationController *logNav = [[UINavigationController alloc] initWithRootViewController:logVC];
+            logNav.modalPresentationStyle = UIModalPresentationAutomatic;
+            [self presentViewController:logNav animated:YES completion:^{
+                switch_account_in_springboard(accountName);
+            }];
+        }];
+        [sheet addAction:action];
+    }
+    
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    
+    if ([[UIDevice currentDevice] userInterfaceIdiom] == UIUserInterfaceIdiomPad && sheet.popoverPresentationController) {
+        sheet.popoverPresentationController.sourceView = self.view;
+        sheet.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2.0, self.view.bounds.size.height / 2.0, 1.0, 1.0);
+        sheet.popoverPresentationController.permittedArrowDirections = 0;
+    }
+    
+    [self presentViewController:sheet animated:YES completion:^{
+        dlclose(handle); // 弹窗显示后关闭句柄，防止内存泄露
+    }];
 }
 
 @end
