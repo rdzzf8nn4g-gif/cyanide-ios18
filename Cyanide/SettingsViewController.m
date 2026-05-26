@@ -3785,30 +3785,6 @@ static NSArray<NSDictionary *> *g_sharedLocalAppsCache = nil;
 - (BOOL)isFiltering {
     return self.searchController.isActive && self.searchController.searchBar.text.length > 0;
 }
-    [super viewDidLoad];
-    self.title = @"Select App to Downgrade";
-    self.tableView.rowHeight = 60;
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh target:self action:@selector(loadApps)];
-    
-    self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
-    self.searchController.searchResultsUpdater = self;
-    self.searchController.obscuresBackgroundDuringPresentation = NO;
-    self.searchController.searchBar.placeholder = @"Search App (Local & App Store)";
-    self.navigationItem.searchController = self.searchController;
-    self.navigationItem.hidesSearchBarWhenScrolling = NO;
-    self.definesPresentationContext = YES;
-    
-    self.filteredApps = @[];
-    self.appStoreResults = @[]; // 初始化
-    self.imageCache = [[NSCache alloc] init]; // 初始化图片缓存
-    self.imageCache.countLimit = 100; // 限制缓存数量，防止内存泄漏
-    
-    [self loadApps];
-}
-
-- (BOOL)isFiltering {
-    return self.searchController.isActive && self.searchController.searchBar.text.length > 0;
-}
 
 - (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
     NSString *searchText = searchController.searchBar.text;
