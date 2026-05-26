@@ -19,6 +19,7 @@
 #import "tweaks/themer.h"
 
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import "DSKeepAlive.h"
 #import "TaskRop/RemoteCall.h"
 #import "kexploit/kutils.h"
