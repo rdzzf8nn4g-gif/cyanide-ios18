@@ -19,7 +19,6 @@
 #import "tweaks/themer.h"
 
 #import <objc/runtime.h>
-#import <objc/message.h>
 #import "DSKeepAlive.h"
 #import "TaskRop/RemoteCall.h"
 #import "kexploit/kutils.h"
@@ -39,83 +38,6 @@
 #import <unistd.h>
 #import <sys/stat.h>
 #import <dlfcn.h>
-
-// 👇================ 账号切换所需声明与辅助函数 ================👇
-@interface SSAccount_Cyanide : NSObject
-- (NSString *)accountName;
-- (NSString *)firstName;
-- (NSString *)lastName;
-- (NSString *)storeFrontIdentifier;
-- (BOOL)isLocalAccount;
-@end
-
-@interface SSAccountStore_Cyanide : NSObject
-+ (id)defaultStore;
-- (NSArray *)accounts;
-@end
-
-static NSString *cyanide_countryCodeForStoreFront(NSString *identifier) {
-    if (!identifier || [identifier length] == 0) {
-        return @"N/A";
-    }
-    static NSDictionary<NSString *, NSString *> *storefrontMap = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        storefrontMap = @{
-                // A
-                @"143481": @"AE", @"143540": @"AG", @"143538": @"AI", @"143575": @"AL", @"143524": @"AM", @"143564": @"AO", @"143505": @"AR", @"143445": @"AT", @"143460": @"AU", @"143568": @"AZ",
-                // B
-                @"143541": @"BB", @"143490": @"BD", @"143446": @"BE", @"143526": @"BG", @"143559": @"BH", @"143542": @"BM", @"143560": @"BN", @"143556": @"BO", @"143503": @"BR", @"143539": @"BS", @"143525": @"BW", @"143565": @"BY", @"143555": @"BZ",
-                // C
-                @"143455": @"CA", @"143459": @"CH", @"143527": @"CI", @"143483": @"CL", @"143465": @"CN", @"143501": @"CO", @"143495": @"CR", @"143557": @"CY", @"143489": @"CZ",
-                // D
-                @"143443": @"DE", @"143458": @"DK", @"143545": @"DM", @"143508": @"DO", @"143563": @"DZ",
-                // E
-                @"143509": @"EC", @"143518": @"EE", @"143516": @"EG", @"143454": @"ES",
-                // F
-                @"143447": @"FI", @"143442": @"FR",
-                // G
-                @"143444": @"GB", @"143546": @"GD", @"143615": @"GE", @"143573": @"GH", @"143448": @"GR", @"143504": @"GT", @"143553": @"GY",
-                // H
-                @"143463": @"HK", @"143510": @"HN", @"143494": @"HR", @"143482": @"HU",
-                // I
-                @"143476": @"ID", @"143449": @"IE", @"143491": @"IL", @"143467": @"IN", @"143558": @"IS", @"143450": @"IT",
-                // J
-                @"143511": @"JM", @"143528": @"JO", @"143462": @"JP",
-                // K
-                @"143529": @"KE", @"143548": @"KN", @"143466": @"KR", @"143493": @"KW", @"143544": @"KY", @"143517": @"KZ",
-                // L
-                @"143497": @"LB", @"143549": @"LC", @"143522": @"LI", @"143486": @"LK", @"143520": @"LT", @"143451": @"LU", @"143519": @"LV",
-                // M
-                @"143523": @"MD", @"143531": @"MG", @"143530": @"MK", @"143532": @"ML", @"143592": @"MN", @"143515": @"MO", @"143547": @"MS", @"143521": @"MT", @"143533": @"MU", @"143488": @"MV", @"143468": @"MX", @"143473": @"MY",
-                // N
-                @"143534": @"NE", @"143561": @"NG", @"143512": @"NI", @"143452": @"NL", @"143457": @"NO", @"143484": @"NP", @"143461": @"NZ",
-                // O
-                @"143562": @"OM",
-                // P
-                @"143485": @"PA", @"143507": @"PE", @"143474": @"PH", @"143477": @"PK", @"143478": @"PL", @"143453": @"PT", @"143513": @"PY",
-                // Q
-                @"143498": @"QA",
-                // R
-                @"143487": @"RO", @"143500": @"RS", @"143469": @"RU",
-                // S
-                @"143479": @"SA", @"143456": @"SE", @"143464": @"SG", @"143499": @"SI", @"143496": @"SK", @"143535": @"SN", @"143554": @"SR", @"143506": @"SV",
-                // T
-                @"143552": @"TC", @"143475": @"TH", @"143536": @"TN", @"143480": @"TR", @"143551": @"TT", @"143470": @"TW", @"143572": @"TZ",
-                // U
-                @"143492": @"UA", @"143537": @"UG", @"143441": @"US", @"143514": @"UY", @"143566": @"UZ",
-                // V
-                @"143550": @"VC", @"143502": @"VE", @"143543": @"VG", @"143471": @"VN",
-                // Y
-                @"143571": @"YE",
-                // Z
-                @"143472": @"ZA"
-        };
-    });
-    NSString *mainId = [[[identifier componentsSeparatedByString:@"-"] firstObject] componentsSeparatedByString:@","][0];
-    return storefrontMap[mainId] ?: identifier;
-}
-// 👆================ 账号切换所需声明结束 ================👆
 
 @interface DSRespringOverlayView : UIView
 @property (nonatomic, strong) WKWebView *webView;
@@ -3618,7 +3540,6 @@ typedef NS_ENUM(NSInteger, SettingsSection) {
     SectionThemer,
     SectionAppDowngrade, // 👈 新增
     SectionBlockUpdates, // 👈 新增
-    SectionAccountSwitcher, // 👈 追加账号切换
     SectionCount,
 };
 
@@ -3817,99 +3738,6 @@ static void downgrade_trigger_in_springboard(NSString *trackIdStr, NSString *ver
         });
     });
 }
-
-// 👇================ 核心：在 itunesstored 中执行免密切换 ================👇
-// 👇================ 核心：在 itunesstored 中利用纯 ROP 读写配置切换账号 ================👇
-static void switch_account_in_itunesstored(NSString *accountName, long long dsid, NSString *storefront) {
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        log_session_begin();
-        log_user("[SWITCH] Requesting hard switch to: %s\n", accountName.UTF8String);
-        
-        if (!settings_ensure_kexploit()) {
-            log_user("[SWITCH] Failed: kernel primitives not acquired.\n");
-            log_session_end();
-            return;
-        }
-        
-        settings_request_all_live_loops_stop("itunesstored process switch");
-        settings_wait_live_loops_stopped_for_switch("itunesstored process switch");
-
-        @synchronized (settings_rc_lock()) {
-            if (g_springboard_rc_ready) {
-                settings_destroy_springboard_remote_call_locked_internal("switching to itunesstored", NO);
-            }
-            
-            log_user("[SWITCH] Attaching to itunesstored daemon...\n");
-            if (init_remote_call("itunesstored", false) != 0) {
-                log_user("[SWITCH] ERROR: Failed to attach. Open App Store to wake the daemon.\n");
-                log_session_end();
-                return;
-            }
-            
-            escape_sbx_demo2_in_session();
-
-            // ROP 辅助：构建 NSString
-            uint64_t (^make_nsstr)(const char*) = ^uint64_t(const char *str) {
-                if (!str) return 0;
-                uint64_t ptr = downgrade_remote_alloc_str(str);
-                uint64_t nsStr = do_remote_call_stable(1000, "objc_msgSend", remote_objc_getClass("NSString"), remote_sel_registerName("stringWithUTF8String:"), ptr, 0,0,0,0,0);
-                do_remote_call_stable(1000, "free", ptr, 0,0,0,0,0,0,0);
-                return nsStr;
-            };
-
-            log_user("[SWITCH] Overwriting active account directly in Daemon's NSUserDefaults...\n");
-            uint64_t udClass = remote_objc_getClass("NSUserDefaults");
-            uint64_t udObj = do_remote_call_stable(1000, "objc_msgSend", udClass, remote_sel_registerName("standardUserDefaults"), 0,0,0,0,0,0);
-
-            if (udObj) {
-                uint64_t setObjSel = remote_sel_registerName("setObject:forKey:");
-
-                // 1. 写入 AppleID
-                uint64_t targetIDNS = make_nsstr(accountName.UTF8String);
-                uint64_t appleIDKeyNS = make_nsstr("AppleID");
-                do_remote_call_stable(1000, "objc_msgSend", udObj, setObjSel, targetIDNS, appleIDKeyNS, 0,0,0,0);
-
-                // 2. 写入 StoreFront
-                NSString *safeStorefront = storefront.length > 0 ? storefront : @"143441-1,29"; 
-                uint64_t targetFrontNS = make_nsstr(safeStorefront.UTF8String);
-                uint64_t storeFrontKeyNS = make_nsstr("StoreFront");
-                do_remote_call_stable(1000, "objc_msgSend", udObj, setObjSel, targetFrontNS, storeFrontKeyNS, 0,0,0,0);
-
-                // 3. 写入 DSID (NSNumber)
-                uint64_t nsnumberClass = remote_objc_getClass("NSNumber");
-                uint64_t targetDsidNS = do_remote_call_stable(1000, "objc_msgSend", nsnumberClass, remote_sel_registerName("numberWithLongLong:"), dsid, 0,0,0,0,0);
-                uint64_t dsidKeyNS = make_nsstr("DSID");
-                do_remote_call_stable(1000, "objc_msgSend", udObj, setObjSel, targetDsidNS, dsidKeyNS, 0,0,0,0);
-
-                // 4. 同步保存到磁盘
-                do_remote_call_stable(1000, "objc_msgSend", udObj, remote_sel_registerName("synchronize"), 0,0,0,0,0,0);
-
-                log_user("[SWITCH] Restarting App Store daemons to apply changes...\n");
-                uint64_t cmdPtr = downgrade_remote_alloc_str("killall -9 appstored");
-                do_remote_call_stable(1000, "system", cmdPtr, 0,0,0,0,0,0,0);
-                do_remote_call_stable(1000, "free", cmdPtr, 0,0,0,0,0,0,0);
-                
-                log_user("[OK] Account switched successfully via raw Defaults injection!\n");
-
-                // 让 itunesstored 退出重启，强制系统加载最新配置
-                do_remote_call_stable(1000, "exit", 0, 0,0,0,0,0,0,0);
-            } else {
-                log_user("[SWITCH] ERROR: Failed to get NSUserDefaults in daemon.\n");
-            }
-            
-            destroy_remote_call();
-        }
-        log_session_end();
-        
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [[NSNotificationCenter defaultCenter] postNotificationName:kSettingsActionsDidCompleteNotification object:nil];
-            // 唤醒 App Store
-            [[UIApplication sharedApplication] openURL:[NSURL URLWithString:@"itms-apps://"] options:@{} completionHandler:nil];
-        });
-    });
-}
-// 👆================ 核心逻辑结束 ================👆
-// 👆================ 核心逻辑结束 ================👆
 
 @interface AppListViewController : UITableViewController <UISearchResultsUpdating>
 @property (nonatomic, strong) NSArray<NSDictionary *> *apps;
@@ -5600,10 +5428,8 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
         @{ @"title": @"SpringBoard Tweaks", @"icon": @"apps.iphone",                         @"color": [UIColor systemIndigoColor], @"section": @(SectionDarkSwordTweaks) },
         @{ @"title": @"Home Layout Extras", @"icon": @"square.dashed.inset.filled",          @"color": [UIColor systemPurpleColor], @"section": @(SectionLayoutExtras) },
         // 👇 追加这两个字典 👇
-        // 👇 追加这三个字典 👇
         @{ @"title": @"App Downgrade",      @"icon": @"arrow.down.app.fill",                @"color": [UIColor systemPurpleColor], @"section": @(SectionAppDowngrade) },
         @{ @"title": @"Block Updates",      @"icon": @"lock.shield.fill",                   @"color": [UIColor systemRedColor],    @"section": @(SectionBlockUpdates) },
-        @{ @"title": @"Account Switcher",   @"icon": @"person.2.circle.fill",               @"color": [UIColor systemBlueColor],   @"section": @(SectionAccountSwitcher) },
     ];
 }
 
@@ -5623,7 +5449,8 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
     for (NSDictionary *bundle in bundles) {
         if ([bundle[@"experimental"] boolValue] && !experimentalOn) continue;
         NSInteger sec = [bundle[@"section"] integerValue];
-        if ([self rowsForSection:sec].count > 0 || sec == SectionAppDowngrade || sec == SectionBlockUpdates || sec == SectionAccountSwitcher) {
+        // 👇 在 if 判断里加入这两项 👇
+        if ([self rowsForSection:sec].count > 0 || sec == SectionAppDowngrade || sec == SectionBlockUpdates) {
             [out addObject:bundle];
         }
     }
@@ -7135,7 +6962,7 @@ void cyanide_present_contact(UIViewController *host)
                 NSString *pushTitle = bundle[@"title"];
                 
                 // 👇========= 追加跳转拦截逻辑 =========👇
-                if (underlying == SectionAppDowngrade || underlying == SectionBlockUpdates || underlying == SectionAccountSwitcher) {
+                if (underlying == SectionAppDowngrade || underlying == SectionBlockUpdates) {
                     if (!g_kexploit_done) {
                         UIAlertController *loadingAlert = [UIAlertController alertControllerWithTitle:@"Initializing" 
                                                                                               message:@"Acquiring kernel primitives...\n" 
@@ -7153,12 +6980,8 @@ void cyanide_present_contact(UIViewController *host)
                                     
                                     [loadingAlert dismissViewControllerAnimated:YES completion:^{
                                         if (ok) {
-                                            if (underlying == SectionAccountSwitcher) {
-                                                [strongSelf showAccountSwitcher];
-                                            } else {
-                                                UIViewController *targetVC = (underlying == SectionAppDowngrade) ? [[AppListViewController alloc] init] : [[BlockUpdatesViewController alloc] init];
-                                                [strongSelf.navigationController pushViewController:targetVC animated:YES];
-                                            }
+                                            UIViewController *targetVC = (underlying == SectionAppDowngrade) ? [[AppListViewController alloc] init] : [[BlockUpdatesViewController alloc] init];
+                                            [strongSelf.navigationController pushViewController:targetVC animated:YES];
                                         } else {
                                             UIAlertController *errAlert = [UIAlertController alertControllerWithTitle:@"Failed" 
                                                                                                               message:@"Could not acquire kernel primitives. Please try again or reboot." 
@@ -7171,12 +6994,8 @@ void cyanide_present_contact(UIViewController *host)
                             });
                         }];
                     } else {
-                        if (underlying == SectionAccountSwitcher) {
-                            [self showAccountSwitcher];
-                        } else {
-                            UIViewController *targetVC = (underlying == SectionAppDowngrade) ? [[AppListViewController alloc] init] : [[BlockUpdatesViewController alloc] init];
-                            [self.navigationController pushViewController:targetVC animated:YES];
-                        }
+                        UIViewController *targetVC = (underlying == SectionAppDowngrade) ? [[AppListViewController alloc] init] : [[BlockUpdatesViewController alloc] init];
+                        [self.navigationController pushViewController:targetVC animated:YES];
                     }
                     return;
                 }
@@ -7563,196 +7382,5 @@ void cyanide_present_contact(UIViewController *host)
         }
     }
 }
-
-// 👇================ 极速读取本地 Plist 展示弹窗 ================👇
-// 👇================ 账号列表弹窗 UI (利用 ROP 获取真实 NSUserDefaults 数据) ================👇
-- (void)showAccountSwitcher {
-    UIAlertController *loadingAlert = [UIAlertController alertControllerWithTitle:@"Initializing"
-                                                                          message:@"Fetching accounts bypassing sandbox...\n"
-                                                                   preferredStyle:UIAlertControllerStyleAlert];
-    
-    [self presentViewController:loadingAlert animated:YES completion:^{
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            log_session_begin();
-
-            if (!settings_ensure_kexploit()) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    [loadingAlert dismissViewControllerAnimated:YES completion:^{
-                        UIAlertController *err = [UIAlertController alertControllerWithTitle:@"Error" message:@"Kernel primitives not acquired." preferredStyle:UIAlertControllerStyleAlert];
-                        [err addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
-                        [self presentViewController:err animated:YES completion:nil];
-                    }];
-                });
-                log_session_end();
-                return;
-            }
-
-            NSMutableArray *validAccounts = [NSMutableArray array];
-
-            settings_request_all_live_loops_stop("itunesstored process switch");
-            settings_wait_live_loops_stopped_for_switch("itunesstored process switch");
-
-            @synchronized (settings_rc_lock()) {
-                if (g_springboard_rc_ready) {
-                    settings_destroy_springboard_remote_call_locked_internal("switching to itunesstored", NO);
-                }
-
-                if (init_remote_call("itunesstored", false) != 0) {
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        [loadingAlert dismissViewControllerAnimated:YES completion:^{
-                            UIAlertController *err = [UIAlertController alertControllerWithTitle:@"Error" message:@"Failed to attach to itunesstored. Open App Store to wake it up." preferredStyle:UIAlertControllerStyleAlert];
-                            [err addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
-                            [self presentViewController:err animated:YES completion:nil];
-                        }];
-                    });
-                    log_session_end();
-                    return;
-                }
-
-                escape_sbx_demo2_in_session();
-
-                uint64_t (^make_nsstr)(const char*) = ^uint64_t(const char *str) {
-                    if (!str) return 0;
-                    uint64_t ptr = downgrade_remote_alloc_str(str);
-                    uint64_t nsStr = do_remote_call_stable(1000, "objc_msgSend", remote_objc_getClass("NSString"), remote_sel_registerName("stringWithUTF8String:"), ptr, 0,0,0,0,0);
-                    do_remote_call_stable(1000, "free", ptr, 0,0,0,0,0,0,0);
-                    return nsStr;
-                };
-
-                // 让 itunesstored 从它自己的 UserDefaults 里抽出 KnownAccounts 数组
-                uint64_t udClass = remote_objc_getClass("NSUserDefaults");
-                uint64_t udObj = do_remote_call_stable(1000, "objc_msgSend", udClass, remote_sel_registerName("standardUserDefaults"), 0,0,0,0,0,0);
-                uint64_t knownKeyNS = make_nsstr("KnownAccounts");
-                uint64_t accountsArray = do_remote_call_stable(1000, "objc_msgSend", udObj, remote_sel_registerName("arrayForKey:"), knownKeyNS, 0,0,0,0,0);
-
-                uint64_t count = accountsArray ? do_remote_call_stable(1000, "objc_msgSend", accountsArray, remote_sel_registerName("count"), 0,0,0,0,0,0) : 0;
-
-                uint64_t nameKeyNS = make_nsstr("AccountName");
-                uint64_t firstKeyNS = make_nsstr("FirstName");
-                uint64_t lastKeyNS = make_nsstr("LastName");
-                uint64_t storeKeyNS = make_nsstr("StoreFront");
-                uint64_t dsidKeyNS = make_nsstr("DSID");
-                
-                uint64_t utf8Sel = remote_sel_registerName("UTF8String");
-                uint64_t objAtSel = remote_sel_registerName("objectAtIndex:");
-                uint64_t objForKeySel = remote_sel_registerName("objectForKey:");
-                uint64_t longLongValSel = remote_sel_registerName("longLongValue");
-
-                // 内存暴力提取真实账号数组信息
-                for (uint64_t i = 0; i < count; i++) {
-                    uint64_t accObj = do_remote_call_stable(1000, "objc_msgSend", accountsArray, objAtSel, i, 0,0,0,0,0);
-                    
-                    // AccountName
-                    uint64_t aNameNS = do_remote_call_stable(1000, "objc_msgSend", accObj, objForKeySel, nameKeyNS, 0,0,0,0,0);
-                    uint64_t aNameC = aNameNS ? do_remote_call_stable(1000, "objc_msgSend", aNameNS, utf8Sel, 0,0,0,0,0,0) : 0;
-                    char aNameBuf[256] = {0};
-                    if (aNameC) remote_read(aNameC, aNameBuf, 255);
-                    NSString *accountName = [NSString stringWithUTF8String:aNameBuf];
-                    if (!accountName || accountName.length == 0) continue;
-
-                    // FirstName
-                    uint64_t fNameNS = do_remote_call_stable(1000, "objc_msgSend", accObj, objForKeySel, firstKeyNS, 0,0,0,0,0);
-                    uint64_t fNameC = fNameNS ? do_remote_call_stable(1000, "objc_msgSend", fNameNS, utf8Sel, 0,0,0,0,0,0) : 0;
-                    char fNameBuf[256] = {0};
-                    if (fNameC) remote_read(fNameC, fNameBuf, 255);
-                    NSString *firstName = [NSString stringWithUTF8String:fNameBuf];
-
-                    // LastName
-                    uint64_t lNameNS = do_remote_call_stable(1000, "objc_msgSend", accObj, objForKeySel, lastKeyNS, 0,0,0,0,0);
-                    uint64_t lNameC = lNameNS ? do_remote_call_stable(1000, "objc_msgSend", lNameNS, utf8Sel, 0,0,0,0,0,0) : 0;
-                    char lNameBuf[256] = {0};
-                    if (lNameC) remote_read(lNameC, lNameBuf, 255);
-                    NSString *lastName = [NSString stringWithUTF8String:lNameBuf];
-
-                    // Storefront
-                    uint64_t sFrontNS = do_remote_call_stable(1000, "objc_msgSend", accObj, objForKeySel, storeKeyNS, 0,0,0,0,0);
-                    uint64_t sFrontC = sFrontNS ? do_remote_call_stable(1000, "objc_msgSend", sFrontNS, utf8Sel, 0,0,0,0,0,0) : 0;
-                    char sFrontBuf[256] = {0};
-                    if (sFrontC) remote_read(sFrontC, sFrontBuf, 255);
-                    NSString *storeFront = [NSString stringWithUTF8String:sFrontBuf];
-
-                    // DSID
-                    uint64_t dsidNS = do_remote_call_stable(1000, "objc_msgSend", accObj, objForKeySel, dsidKeyNS, 0,0,0,0,0);
-                    long long dsidVal = dsidNS ? do_remote_call_stable(1000, "objc_msgSend", dsidNS, longLongValSel, 0,0,0,0,0,0) : 0;
-
-                    [validAccounts addObject:@{
-                        @"accountName": accountName ?: @"",
-                        @"firstName": firstName ?: @"",
-                        @"lastName": lastName ?: @"",
-                        @"storeFront": storeFront ?: @"",
-                        @"dsid": @(dsidVal)
-                    }];
-                }
-                
-                destroy_remote_call();
-            }
-            log_session_end();
-
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [loadingAlert dismissViewControllerAnimated:YES completion:^{
-                    if (validAccounts.count == 0) {
-                        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"No Accounts" message:@"No App Store accounts found on this device." preferredStyle:UIAlertControllerStyleAlert];
-                        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-                        [self presentViewController:alert animated:YES completion:nil];
-                        return;
-                    }
-
-                    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Switch App Store Account" message:@"Select an account. It will be switched instantly without password." preferredStyle:UIAlertControllerStyleActionSheet];
-
-                    // 倒序遍历（这样越近登录的账号排在前面），并去重
-                    NSMutableArray *finalAccounts = [NSMutableArray array];
-                    NSMutableSet *seen = [NSMutableSet set];
-                    for (NSDictionary *acc in [validAccounts reverseObjectEnumerator]) {
-                        NSString *aName = acc[@"accountName"];
-                        if (![seen containsObject:aName]) {
-                            [seen addObject:aName];
-                            [finalAccounts addObject:acc];
-                        }
-                    }
-
-                    for (NSDictionary *acc in finalAccounts) {
-                        NSString *accountName = acc[@"accountName"];
-                        NSString *firstName = acc[@"firstName"];
-                        NSString *lastName = acc[@"lastName"];
-                        NSString *storefront = acc[@"storeFront"];
-                        long long dsid = [acc[@"dsid"] longLongValue];
-
-                        NSString *countryCode = cyanide_countryCodeForStoreFront(storefront);
-                        NSString *namePart = @"";
-                        if (firstName.length > 0) {
-                            namePart = [NSString stringWithFormat:@"%@ %@", firstName, lastName.length > 0 ? lastName : @""];
-                        }
-
-                        NSString *title = (namePart.length > 0 && ![namePart isEqualToString:accountName])
-                            ? [NSString stringWithFormat:@"%@ (%@) %@", namePart, countryCode, accountName]
-                            : [NSString stringWithFormat:@"%@ (%@)", accountName, countryCode];
-
-                        UIAlertAction *action = [UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-                            InstallProgressViewController *logVC = [[InstallProgressViewController alloc] init];
-                            UINavigationController *logNav = [[UINavigationController alloc] initWithRootViewController:logVC];
-                            logNav.modalPresentationStyle = UIModalPresentationAutomatic;
-                            [self presentViewController:logNav animated:YES completion:^{
-                                // 👉 触发纯 NSUserDefaults 覆写函数
-                                switch_account_in_itunesstored(accountName, dsid, storefront);
-                            }];
-                        }];
-                        [sheet addAction:action];
-                    }
-
-                    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-
-                    if ([[UIDevice currentDevice] userInterfaceIdiom] == UIUserInterfaceIdiomPad && sheet.popoverPresentationController) {
-                        sheet.popoverPresentationController.sourceView = self.view;
-                        sheet.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2.0, self.view.bounds.size.height / 2.0, 1.0, 1.0);
-                        sheet.popoverPresentationController.permittedArrowDirections = 0;
-                    }
-
-                    [self presentViewController:sheet animated:YES completion:nil];
-                }];
-            });
-        });
-    }];
-}
-// 👆================ UI 代码结束 ================👇
 
 @end
