@@ -3819,7 +3819,7 @@ static void downgrade_trigger_in_springboard(NSString *trackIdStr, NSString *ver
 }
 
 // 👇================ 核心：在 itunesstored 中执行免密切换 ================👇
-// 👇================ 核心：在 itunesstored 中利用纯 ROP 读写 Plist 切换账号 ================👇
+// 👇================ 核心：在 itunesstored 中利用纯 ROP 读写配置切换账号 ================👇
 static void switch_account_in_itunesstored(NSString *accountName, long long dsid, NSString *storefront) {
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         log_session_begin();
@@ -3848,55 +3848,53 @@ static void switch_account_in_itunesstored(NSString *accountName, long long dsid
             
             escape_sbx_demo2_in_session();
 
-            // ROP 辅助 Block：安全创建并返回 NSString，避免内存泄漏
+            // ROP 辅助：构建 NSString
             uint64_t (^make_nsstr)(const char*) = ^uint64_t(const char *str) {
+                if (!str) return 0;
                 uint64_t ptr = downgrade_remote_alloc_str(str);
                 uint64_t nsStr = do_remote_call_stable(1000, "objc_msgSend", remote_objc_getClass("NSString"), remote_sel_registerName("stringWithUTF8String:"), ptr, 0,0,0,0,0);
                 do_remote_call_stable(1000, "free", ptr, 0,0,0,0,0,0,0);
                 return nsStr;
             };
 
-            log_user("[SWITCH] Overwriting active account directly in Daemon's Plist...\n");
-            uint64_t pathNS = make_nsstr("/var/mobile/Library/Preferences/com.apple.itunesstored.plist");
-            uint64_t mDictClass = remote_objc_getClass("NSMutableDictionary");
-            uint64_t mDictObj = do_remote_call_stable(1000, "objc_msgSend", mDictClass, remote_sel_registerName("dictionaryWithContentsOfFile:"), pathNS, 0,0,0,0,0);
+            log_user("[SWITCH] Overwriting active account directly in Daemon's NSUserDefaults...\n");
+            uint64_t udClass = remote_objc_getClass("NSUserDefaults");
+            uint64_t udObj = do_remote_call_stable(1000, "objc_msgSend", udClass, remote_sel_registerName("standardUserDefaults"), 0,0,0,0,0,0);
 
-            if (mDictObj) {
+            if (udObj) {
                 uint64_t setObjSel = remote_sel_registerName("setObject:forKey:");
 
-                // 写入 AppleID
+                // 1. 写入 AppleID
                 uint64_t targetIDNS = make_nsstr(accountName.UTF8String);
                 uint64_t appleIDKeyNS = make_nsstr("AppleID");
-                do_remote_call_stable(1000, "objc_msgSend", mDictObj, setObjSel, targetIDNS, appleIDKeyNS, 0,0,0,0);
+                do_remote_call_stable(1000, "objc_msgSend", udObj, setObjSel, targetIDNS, appleIDKeyNS, 0,0,0,0);
 
-                // 写入 StoreFront
-                NSString *safeStorefront = storefront ?: @"143441-1,29"; // 默认美区 Fallback
+                // 2. 写入 StoreFront
+                NSString *safeStorefront = storefront.length > 0 ? storefront : @"143441-1,29"; 
                 uint64_t targetFrontNS = make_nsstr(safeStorefront.UTF8String);
                 uint64_t storeFrontKeyNS = make_nsstr("StoreFront");
-                do_remote_call_stable(1000, "objc_msgSend", mDictObj, setObjSel, targetFrontNS, storeFrontKeyNS, 0,0,0,0);
+                do_remote_call_stable(1000, "objc_msgSend", udObj, setObjSel, targetFrontNS, storeFrontKeyNS, 0,0,0,0);
 
-                // 写入 DSID (NSNumber)
+                // 3. 写入 DSID (NSNumber)
                 uint64_t nsnumberClass = remote_objc_getClass("NSNumber");
                 uint64_t targetDsidNS = do_remote_call_stable(1000, "objc_msgSend", nsnumberClass, remote_sel_registerName("numberWithLongLong:"), dsid, 0,0,0,0,0);
                 uint64_t dsidKeyNS = make_nsstr("DSID");
-                do_remote_call_stable(1000, "objc_msgSend", mDictObj, setObjSel, targetDsidNS, dsidKeyNS, 0,0,0,0);
+                do_remote_call_stable(1000, "objc_msgSend", udObj, setObjSel, targetDsidNS, dsidKeyNS, 0,0,0,0);
 
-                // 强制保存
-                uint64_t writeRes = do_remote_call_stable(1000, "objc_msgSend", mDictObj, remote_sel_registerName("writeToFile:atomically:"), pathNS, 1, 0,0,0,0);
-                log_user("[SWITCH] Plist write result (1=Success): %llu\n", writeRes);
+                // 4. 同步保存到磁盘
+                do_remote_call_stable(1000, "objc_msgSend", udObj, remote_sel_registerName("synchronize"), 0,0,0,0,0,0);
 
-                // 重启相关的商店守护进程以强制应用最新 Plist
                 log_user("[SWITCH] Restarting App Store daemons to apply changes...\n");
                 uint64_t cmdPtr = downgrade_remote_alloc_str("killall -9 appstored");
                 do_remote_call_stable(1000, "system", cmdPtr, 0,0,0,0,0,0,0);
                 do_remote_call_stable(1000, "free", cmdPtr, 0,0,0,0,0,0,0);
                 
-                log_user("[OK] Account switched successfully via raw Plist injection!\n");
+                log_user("[OK] Account switched successfully via raw Defaults injection!\n");
 
-                // 自杀 itunesstored 以完成刷新
+                // 让 itunesstored 退出重启，强制系统加载最新配置
                 do_remote_call_stable(1000, "exit", 0, 0,0,0,0,0,0,0);
             } else {
-                log_user("[SWITCH] ERROR: Failed to load plist in daemon memory.\n");
+                log_user("[SWITCH] ERROR: Failed to get NSUserDefaults in daemon.\n");
             }
             
             destroy_remote_call();
@@ -3905,7 +3903,7 @@ static void switch_account_in_itunesstored(NSString *accountName, long long dsid
         
         dispatch_async(dispatch_get_main_queue(), ^{
             [[NSNotificationCenter defaultCenter] postNotificationName:kSettingsActionsDidCompleteNotification object:nil];
-            // 唤醒 App Store，它启动时会重新读取刚才写入的数据
+            // 唤醒 App Store
             [[UIApplication sharedApplication] openURL:[NSURL URLWithString:@"itms-apps://"] options:@{} completionHandler:nil];
         });
     });
@@ -7567,7 +7565,7 @@ void cyanide_present_contact(UIViewController *host)
 }
 
 // 👇================ 极速读取本地 Plist 展示弹窗 ================👇
-// 👇================ 账号列表弹窗 UI (利用 ROP 获取真实 Plist 数据) ================👇
+// 👇================ 账号列表弹窗 UI (利用 ROP 获取真实 NSUserDefaults 数据) ================👇
 - (void)showAccountSwitcher {
     UIAlertController *loadingAlert = [UIAlertController alertControllerWithTitle:@"Initializing"
                                                                           message:@"Fetching accounts bypassing sandbox...\n"
@@ -7613,80 +7611,79 @@ void cyanide_present_contact(UIViewController *host)
 
                 escape_sbx_demo2_in_session();
 
-                // 辅助函数：构造 C String
                 uint64_t (^make_nsstr)(const char*) = ^uint64_t(const char *str) {
+                    if (!str) return 0;
                     uint64_t ptr = downgrade_remote_alloc_str(str);
                     uint64_t nsStr = do_remote_call_stable(1000, "objc_msgSend", remote_objc_getClass("NSString"), remote_sel_registerName("stringWithUTF8String:"), ptr, 0,0,0,0,0);
                     do_remote_call_stable(1000, "free", ptr, 0,0,0,0,0,0,0);
                     return nsStr;
                 };
 
-                // 让 itunesstored 自己读出它的配置文件
-                uint64_t pathNS = make_nsstr("/var/mobile/Library/Preferences/com.apple.itunesstored.plist");
-                uint64_t dictClass = remote_objc_getClass("NSDictionary");
-                uint64_t dictObj = do_remote_call_stable(1000, "objc_msgSend", dictClass, remote_sel_registerName("dictionaryWithContentsOfFile:"), pathNS, 0,0,0,0,0);
+                // 让 itunesstored 从它自己的 UserDefaults 里抽出 KnownAccounts 数组
+                uint64_t udClass = remote_objc_getClass("NSUserDefaults");
+                uint64_t udObj = do_remote_call_stable(1000, "objc_msgSend", udClass, remote_sel_registerName("standardUserDefaults"), 0,0,0,0,0,0);
+                uint64_t knownKeyNS = make_nsstr("KnownAccounts");
+                uint64_t accountsArray = do_remote_call_stable(1000, "objc_msgSend", udObj, remote_sel_registerName("arrayForKey:"), knownKeyNS, 0,0,0,0,0);
 
-                if (dictObj) {
-                    uint64_t knownKeyNS = make_nsstr("KnownAccounts");
-                    uint64_t accountsArray = do_remote_call_stable(1000, "objc_msgSend", dictObj, remote_sel_registerName("objectForKey:"), knownKeyNS, 0,0,0,0,0);
-                    uint64_t count = accountsArray ? do_remote_call_stable(1000, "objc_msgSend", accountsArray, remote_sel_registerName("count"), 0,0,0,0,0,0) : 0;
+                uint64_t count = accountsArray ? do_remote_call_stable(1000, "objc_msgSend", accountsArray, remote_sel_registerName("count"), 0,0,0,0,0,0) : 0;
 
-                    uint64_t nameKeyNS = make_nsstr("AccountName");
-                    uint64_t firstKeyNS = make_nsstr("FirstName");
-                    uint64_t lastKeyNS = make_nsstr("LastName");
-                    uint64_t storeKeyNS = make_nsstr("StoreFront");
-                    uint64_t dsidKeyNS = make_nsstr("DSID");
+                uint64_t nameKeyNS = make_nsstr("AccountName");
+                uint64_t firstKeyNS = make_nsstr("FirstName");
+                uint64_t lastKeyNS = make_nsstr("LastName");
+                uint64_t storeKeyNS = make_nsstr("StoreFront");
+                uint64_t dsidKeyNS = make_nsstr("DSID");
+                
+                uint64_t utf8Sel = remote_sel_registerName("UTF8String");
+                uint64_t objAtSel = remote_sel_registerName("objectAtIndex:");
+                uint64_t objForKeySel = remote_sel_registerName("objectForKey:");
+                uint64_t longLongValSel = remote_sel_registerName("longLongValue");
+
+                // 内存暴力提取真实账号数组信息
+                for (uint64_t i = 0; i < count; i++) {
+                    uint64_t accObj = do_remote_call_stable(1000, "objc_msgSend", accountsArray, objAtSel, i, 0,0,0,0,0);
                     
-                    uint64_t utf8Sel = remote_sel_registerName("UTF8String");
-                    uint64_t objAtSel = remote_sel_registerName("objectAtIndex:");
-                    uint64_t objForKeySel = remote_sel_registerName("objectForKey:");
+                    // AccountName
+                    uint64_t aNameNS = do_remote_call_stable(1000, "objc_msgSend", accObj, objForKeySel, nameKeyNS, 0,0,0,0,0);
+                    uint64_t aNameC = aNameNS ? do_remote_call_stable(1000, "objc_msgSend", aNameNS, utf8Sel, 0,0,0,0,0,0) : 0;
+                    char aNameBuf[256] = {0};
+                    if (aNameC) remote_read(aNameC, aNameBuf, 255);
+                    NSString *accountName = [NSString stringWithUTF8String:aNameBuf];
+                    if (!accountName || accountName.length == 0) continue;
 
-                    // 内存提取出各个账户的详细信息
-                    for (uint64_t i = 0; i < count; i++) {
-                        uint64_t accObj = do_remote_call_stable(1000, "objc_msgSend", accountsArray, objAtSel, i, 0,0,0,0,0);
-                        
-                        // AccountName
-                        uint64_t aNameNS = do_remote_call_stable(1000, "objc_msgSend", accObj, objForKeySel, nameKeyNS, 0,0,0,0,0);
-                        uint64_t aNameC = aNameNS ? do_remote_call_stable(1000, "objc_msgSend", aNameNS, utf8Sel, 0,0,0,0,0,0) : 0;
-                        char aNameBuf[256] = {0};
-                        if (aNameC) remote_read(aNameC, aNameBuf, 255);
-                        NSString *accountName = [NSString stringWithUTF8String:aNameBuf];
-                        if (!accountName || accountName.length == 0) continue;
+                    // FirstName
+                    uint64_t fNameNS = do_remote_call_stable(1000, "objc_msgSend", accObj, objForKeySel, firstKeyNS, 0,0,0,0,0);
+                    uint64_t fNameC = fNameNS ? do_remote_call_stable(1000, "objc_msgSend", fNameNS, utf8Sel, 0,0,0,0,0,0) : 0;
+                    char fNameBuf[256] = {0};
+                    if (fNameC) remote_read(fNameC, fNameBuf, 255);
+                    NSString *firstName = [NSString stringWithUTF8String:fNameBuf];
 
-                        // FirstName
-                        uint64_t fNameNS = do_remote_call_stable(1000, "objc_msgSend", accObj, objForKeySel, firstKeyNS, 0,0,0,0,0);
-                        uint64_t fNameC = fNameNS ? do_remote_call_stable(1000, "objc_msgSend", fNameNS, utf8Sel, 0,0,0,0,0,0) : 0;
-                        char fNameBuf[256] = {0};
-                        if (fNameC) remote_read(fNameC, fNameBuf, 255);
-                        NSString *firstName = [NSString stringWithUTF8String:fNameBuf];
+                    // LastName
+                    uint64_t lNameNS = do_remote_call_stable(1000, "objc_msgSend", accObj, objForKeySel, lastKeyNS, 0,0,0,0,0);
+                    uint64_t lNameC = lNameNS ? do_remote_call_stable(1000, "objc_msgSend", lNameNS, utf8Sel, 0,0,0,0,0,0) : 0;
+                    char lNameBuf[256] = {0};
+                    if (lNameC) remote_read(lNameC, lNameBuf, 255);
+                    NSString *lastName = [NSString stringWithUTF8String:lNameBuf];
 
-                        // LastName
-                        uint64_t lNameNS = do_remote_call_stable(1000, "objc_msgSend", accObj, objForKeySel, lastKeyNS, 0,0,0,0,0);
-                        uint64_t lNameC = lNameNS ? do_remote_call_stable(1000, "objc_msgSend", lNameNS, utf8Sel, 0,0,0,0,0,0) : 0;
-                        char lNameBuf[256] = {0};
-                        if (lNameC) remote_read(lNameC, lNameBuf, 255);
-                        NSString *lastName = [NSString stringWithUTF8String:lNameBuf];
+                    // Storefront
+                    uint64_t sFrontNS = do_remote_call_stable(1000, "objc_msgSend", accObj, objForKeySel, storeKeyNS, 0,0,0,0,0);
+                    uint64_t sFrontC = sFrontNS ? do_remote_call_stable(1000, "objc_msgSend", sFrontNS, utf8Sel, 0,0,0,0,0,0) : 0;
+                    char sFrontBuf[256] = {0};
+                    if (sFrontC) remote_read(sFrontC, sFrontBuf, 255);
+                    NSString *storeFront = [NSString stringWithUTF8String:sFrontBuf];
 
-                        // Storefront
-                        uint64_t sFrontNS = do_remote_call_stable(1000, "objc_msgSend", accObj, objForKeySel, storeKeyNS, 0,0,0,0,0);
-                        uint64_t sFrontC = sFrontNS ? do_remote_call_stable(1000, "objc_msgSend", sFrontNS, utf8Sel, 0,0,0,0,0,0) : 0;
-                        char sFrontBuf[256] = {0};
-                        if (sFrontC) remote_read(sFrontC, sFrontBuf, 255);
-                        NSString *storeFront = [NSString stringWithUTF8String:sFrontBuf];
+                    // DSID
+                    uint64_t dsidNS = do_remote_call_stable(1000, "objc_msgSend", accObj, objForKeySel, dsidKeyNS, 0,0,0,0,0);
+                    long long dsidVal = dsidNS ? do_remote_call_stable(1000, "objc_msgSend", dsidNS, longLongValSel, 0,0,0,0,0,0) : 0;
 
-                        // DSID
-                        uint64_t dsidNS = do_remote_call_stable(1000, "objc_msgSend", accObj, objForKeySel, dsidKeyNS, 0,0,0,0,0);
-                        long long dsidVal = dsidNS ? do_remote_call_stable(1000, "objc_msgSend", dsidNS, remote_sel_registerName("longLongValue"), 0,0,0,0,0,0) : 0;
-
-                        [validAccounts addObject:@{
-                            @"accountName": accountName ?: @"",
-                            @"firstName": firstName ?: @"",
-                            @"lastName": lastName ?: @"",
-                            @"storeFront": storeFront ?: @"",
-                            @"dsid": @(dsidVal)
-                        }];
-                    }
+                    [validAccounts addObject:@{
+                        @"accountName": accountName ?: @"",
+                        @"firstName": firstName ?: @"",
+                        @"lastName": lastName ?: @"",
+                        @"storeFront": storeFront ?: @"",
+                        @"dsid": @(dsidVal)
+                    }];
                 }
+                
                 destroy_remote_call();
             }
             log_session_end();
@@ -7735,7 +7732,7 @@ void cyanide_present_contact(UIViewController *host)
                             UINavigationController *logNav = [[UINavigationController alloc] initWithRootViewController:logVC];
                             logNav.modalPresentationStyle = UIModalPresentationAutomatic;
                             [self presentViewController:logNav animated:YES completion:^{
-                                // 👉 将账号名、DSID 和 StoreFront 一同传递给核心覆写函数
+                                // 👉 触发纯 NSUserDefaults 覆写函数
                                 switch_account_in_itunesstored(accountName, dsid, storefront);
                             }];
                         }];
